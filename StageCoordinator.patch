@@ -1,0 +1,313 @@
+Index: libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java b/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java	(revision 94cb5ad9a7d6ac088804b1fbfa21907590ee7d9d)
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/splitscreen/StageCoordinator.java	(revision 57c0b3698d1b2903c5fa53489be14f2e21129351)
+@@ -70,6 +70,7 @@
+ import android.annotation.CallSuper;
+ import android.annotation.NonNull;
+ import android.annotation.Nullable;
++import android.annotation.TargetApi;
+ import android.app.ActivityManager;
+ import android.app.ActivityOptions;
+ import android.app.IActivityTaskManager;
+@@ -79,23 +80,29 @@
+ import android.content.Intent;
+ import android.content.pm.ShortcutInfo;
+ import android.content.res.Configuration;
++import android.graphics.Matrix;
+ import android.graphics.Rect;
+ import android.hardware.devicestate.DeviceStateManager;
++import android.os.Build;
+ import android.os.Bundle;
+ import android.os.Debug;
+ import android.os.IBinder;
++import android.os.Looper;
+ import android.os.RemoteException;
+ import android.os.ServiceManager;
+ import android.util.Log;
+ import android.util.Slog;
+ import android.view.Choreographer;
++import android.view.Display;
+ import android.view.IRemoteAnimationFinishedCallback;
+ import android.view.IRemoteAnimationRunner;
++import android.view.MotionEvent;
+ import android.view.RemoteAnimationAdapter;
+ import android.view.RemoteAnimationTarget;
+ import android.view.SurfaceControl;
+ import android.view.SurfaceSession;
+ import android.view.WindowManager;
++import android.view.animation.AccelerateInterpolator;
+ import android.widget.Toast;
+ import android.window.DisplayAreaInfo;
+ import android.window.RemoteTransition;
+@@ -109,6 +116,8 @@
+ import com.android.internal.protolog.common.ProtoLog;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.launcher3.icons.IconProvider;
++import com.android.wm.shell.InputChannelCompat;
++import com.android.wm.shell.InputMonitorCompat;
+ import com.android.wm.shell.R;
+ import com.android.wm.shell.ShellTaskOrganizer;
+ import com.android.wm.shell.common.DisplayController;
+@@ -355,6 +364,239 @@
+         return STAGE_TYPE_UNDEFINED;
+     }
+ 
++    InputMonitorCompat mInputMonitor;
++    InputChannelCompat.InputEventReceiver mInputEventReceiver;
++    StageTaskListener mCurrentStage, mOtherStage;
++    int mPointDownX1, mPointDownY1, mPointDownX2, mPointDownY2;
++    int GAP_START = 5;
++    int mDragXOffset, mDragYOffset;
++    boolean mEnterDragSplit;
++    private void startInputListening() {
++        stopInputListening();
++        mInputMonitor = new InputMonitorCompat("Screenshot", Display.DEFAULT_DISPLAY);
++        mInputEventReceiver = mInputMonitor.getInputReceiver(
++                Looper.getMainLooper(), Choreographer.getInstance(), ev -> {
++                    if (ev instanceof MotionEvent) {
++                        MotionEvent event = (MotionEvent) ev;
++                        int pointCount = event.getPointerCount();
++                        android.util.Log.i("TestSplitScreen", "startInputListening ev= "+event);
++                        switch (event.getActionMasked()){
++                            case MotionEvent.ACTION_DOWN:
++                            case MotionEvent.ACTION_POINTER_DOWN:
++                                mPointDownX1 = (int) event.getX(0);
++                                mPointDownY1 = (int) event.getY(0);
++                                if(pointCount > 1){
++                                    mPointDownX2 = (int) event.getX(1);
++                                    mPointDownY2 = (int) event.getY(1);
++                                }
++
++                                Rect mainBounds = mMainStage.mRootTaskInfo.configuration.windowConfiguration.getBounds();
++                                Rect sideBounds = mSideStage.mRootTaskInfo.configuration.windowConfiguration.getBounds();
++
++                                /*if( mainBounds.contains(mPointDownX1, mPointDownY1)
++                                        && mainBounds.contains(mPointDownX2, mPointDownY2) ){*/
++                                if( mainBounds.contains(mPointDownX1, mPointDownY1) ){
++                                    mCurrentStage = mMainStage;
++                                    mOtherStage = mSideStage;
++                                }//else if(sideBounds.contains(mPointDownX1, mPointDownY1) && sideBounds.contains(mPointDownX2, mPointDownY2)){
++                                else if( sideBounds.contains(mPointDownX1, mPointDownY1) ){
++                                    mCurrentStage = mSideStage;
++                                    mOtherStage = mMainStage;
++                                }
++                            break;
++
++                            case MotionEvent.ACTION_MOVE:
++                                /*if( event.getPointerCount() < 2 ){
++                                    break;
++                                }*/
++                                if( Math.abs(event.getY(0) - mPointDownY1) > GAP_START ){
++                                    mEnterDragSplit = true;
++                                }
++                                if(mEnterDragSplit){
++                                    int y1 = (int)event.getY(0);
++                                    mDragYOffset = y1 - mPointDownY1;
++//                                    mDragYOffset = y1;
++                                    moveSelectSurface(mCurrentStage.mRootLeash, mDragXOffset, mDragYOffset);
++                                }
++                                break;
++
++                            case MotionEvent.ACTION_UP:
++                            case MotionEvent.ACTION_POINTER_UP:
++                            case MotionEvent.ACTION_CANCEL:
++                                if( mEnterDragSplit ){
++                                    if(null != mOtherStageAnimator ){
++                                        int distance = Math.abs(mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top
++                                                - mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top);
++                                        int destY = isDragTopArea ? distance : -distance;
++                                        destY = mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++
++                                        if(isDragTopArea){
++                                            destY = mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().bottom
++                                                    - mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().bottom;
++
++                                        }else{
++                                            /*destY = mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top
++                                                    - mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;*/
++                                            destY = mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++                                        }
++                                        startCurrentStageAnimation(mCurrentStage.mRootLeash, getMoveToYValue(mDragYOffset), destY);
++
++                                    }else{
++                                        //回原位置
++                                        startCurrentStageAnimation(mCurrentStage.mRootLeash, getMoveToYValue(mDragYOffset),
++                                                mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top);
++                                    }
++                                }
++                                mEnterDragSplit = false;
++                                mOtherStageAnimator = null;
++                                mCurrentStageAnimator = null;
++                                break;
++
++
++                        }
++                    }
++                });
++    }
++
++
++    private int getMoveToYValue(int yOffset){
++        return yOffset + mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++    }
++
++    private int getMoveToXValue(int xOffset){
++//        return xOffset + mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().left;
++        return 0;
++    }
++
++    void moveSelectSurface(SurfaceControl surfaceControl, int xOffset, int yOffset){
++        SurfaceControl.Transaction transaction = mTransactionPool.acquire();
++        Matrix matrix = new Matrix();
++        matrix.setTranslate(getMoveToXValue(xOffset), getMoveToYValue(yOffset));
++
++        transaction.setMatrix(surfaceControl, matrix,new float[9]);
++        setDividerVisibility(false, transaction);
++        transaction.apply();
++        mTransactionPool.release(transaction);
++
++        if(shouldStartOtherStageAnimation(yOffset)){
++            int startY = 0,destY;
++            int distance = Math.abs(mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top
++                    - mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top);
++            destY = isDragTopArea ? -distance : distance;
++//            startOtherStageAnimation(mOtherStage.mRootLeash, startY, destY);
++
++            if(isDragTopArea){
++
++
++
++                startY = mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top
++                        - mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++                destY = mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++            }else{
++                startY = mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++                destY = mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().bottom
++                        - mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().bottom;
++            }
++            startOtherStageAnimation(mOtherStage.mRootLeash, startY, destY);
++        }
++
++    }
++
++    ValueAnimator mOtherStageAnimator;
++    @TargetApi(Build.VERSION_CODES.HONEYCOMB)
++    void startOtherStageAnimation(SurfaceControl surfaceControl, int startY, int destY){
++        if(null != mOtherStageAnimator){
++            return;
++        }
++        mOtherStageAnimator = ValueAnimator.ofInt(startY, destY);
++        mOtherStageAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
++            @Override
++            public void onAnimationUpdate(ValueAnimator animation) {
++                int currentY = (int)animation.getAnimatedValue();
++                SurfaceControl.Transaction transaction = mTransactionPool.acquire();
++                transaction.setPosition(surfaceControl, 0, currentY);
++                setDividerVisibility(false, transaction);
++                transaction.apply();
++                mTransactionPool.release(transaction);
++
++            }
++        });
++        mOtherStageAnimator.setInterpolator(new AccelerateInterpolator(1.0f));
++
++        mOtherStageAnimator.addListener(new AnimatorListenerAdapter() {
++            @Override
++            public void onAnimationEnd(Animator animation) {
++                super.onAnimationEnd(animation);
++                setSideStagePosition(SplitLayout.reversePosition(mSideStagePosition), null);
++
++                SurfaceControl.Transaction transaction = mTransactionPool.acquire();
++                setDividerVisibility(true, transaction);
++                transaction.apply();
++                mTransactionPool.release(transaction);
++            }
++        });
++        mOtherStageAnimator.setDuration(1000);
++        mOtherStageAnimator.start();
++    }
++
++    ValueAnimator mCurrentStageAnimator;
++    @TargetApi(Build.VERSION_CODES.HONEYCOMB)
++    void startCurrentStageAnimation(SurfaceControl surfaceControl, int startY, int destY){
++        if(null != mCurrentStageAnimator){
++            return;
++        }
++        mCurrentStageAnimator = ValueAnimator.ofInt(startY, destY);
++        mCurrentStageAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
++            @Override
++            public void onAnimationUpdate(ValueAnimator animation) {
++                int currentY = (int)animation.getAnimatedValue();
++                SurfaceControl.Transaction transaction = mTransactionPool.acquire();
++                transaction.setPosition(surfaceControl, 0, currentY);
++                transaction.apply();
++                mTransactionPool.release(transaction);
++
++            }
++        });
++        mCurrentStageAnimator.setInterpolator(new AccelerateInterpolator(1.0f));
++        mCurrentStageAnimator.setDuration(1000);
++        mCurrentStageAnimator.start();
++    }
++
++
++    boolean isDragTopArea;
++    float OTHER_STAGE_ANIMATION_GAP = 0.2f;
++    boolean shouldStartOtherStageAnimation(int yOffset){
++        int gapHeight = (int)((float)mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().height() * OTHER_STAGE_ANIMATION_GAP);
++        isDragTopArea = mCurrentStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().bottom
++                < mOtherStage.mRootTaskInfo.configuration.windowConfiguration.getBounds().top;
++
++        if(isDragTopArea){
++            if( yOffset > 0 && yOffset > gapHeight ){
++                return true;
++            }
++        }else{
++            if( yOffset < 0 && Math.abs(yOffset) > gapHeight ){
++                return true;
++            }
++        }
++        return false;
++    }
++
++
++
++
++    void stopInputListening() {
++        if (mInputMonitor != null) {
++            mInputMonitor.dispose();
++            mInputMonitor = null;
++        }
++        if (mInputEventReceiver != null) {
++            mInputEventReceiver.dispose();
++            mInputEventReceiver = null;
++        }
++    }
++
++
+     boolean moveToStage(ActivityManager.RunningTaskInfo task, @StageType int stageType,
+             @SplitPosition int stagePosition, WindowContainerTransaction wct) {
+         StageTaskListener targetStage;
+@@ -601,7 +843,7 @@
+         // Init divider first to make divider leash for remote animation target.
+         mSplitLayout.init();
+         mSplitLayout.setDivideRatio(splitRatio);
+-
++        startInputListening();
+         // Set false to avoid record new bounds with old task still on top;
+         mShouldUpdateRecents = false;
+         mIsDividerRemoteAnimating = true;
+@@ -916,7 +1158,7 @@
+     private void applyExitSplitScreen(@Nullable StageTaskListener childrenToTop,
+             WindowContainerTransaction wct, @ExitReason int exitReason) {
+         if (!mMainStage.isActive() || mIsExiting) return;
+-
++        stopInputListening();
+         onSplitScreenExit();
+ 
+         mRecentTasks.ifPresent(recentTasks -> {

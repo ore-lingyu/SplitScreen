@@ -1,0 +1,70 @@
+Index: libs/WindowManager/Shell/src/com/android/wm/shell/InputMonitorCompat.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/InputMonitorCompat.java b/libs/WindowManager/Shell/src/com/android/wm/shell/InputMonitorCompat.java
+new file mode 100644
+--- /dev/null	(revision 57c0b3698d1b2903c5fa53489be14f2e21129351)
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/InputMonitorCompat.java	(revision 57c0b3698d1b2903c5fa53489be14f2e21129351)
+@@ -0,0 +1,60 @@
++/**
++ * Copyright (C) 2019 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package com.android.wm.shell;
++
++import android.hardware.input.InputManager;
++import android.os.Looper;
++import android.view.Choreographer;
++import android.view.InputMonitor;
++import com.android.wm.shell.InputChannelCompat.InputEventReceiver;
++import com.android.wm.shell.InputChannelCompat.InputEventListener;
++
++/**
++ * @see InputMonitor
++ */
++public class InputMonitorCompat {
++    private final InputMonitor mInputMonitor;
++
++    /**
++     * Monitor input on the specified display for gestures.
++     */
++    public InputMonitorCompat(String name, int displayId) {
++        mInputMonitor = InputManager.getInstance().monitorGestureInput(name, displayId);
++    }
++
++    /**
++     * @see InputMonitor#pilferPointers()
++     */
++    public void pilferPointers() {
++        mInputMonitor.pilferPointers();
++    }
++
++    /**
++     * @see InputMonitor#dispose()
++     */
++    public void dispose() {
++        mInputMonitor.dispose();
++    }
++
++    /**
++     * @see InputMonitor#getInputChannel()
++     */
++    public InputEventReceiver getInputReceiver(Looper looper, Choreographer choreographer,
++                                                                  InputEventListener listener) {
++        return new InputEventReceiver(mInputMonitor.getInputChannel(), looper, choreographer,
++                listener);
++    }
++}
